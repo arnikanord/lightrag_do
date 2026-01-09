@@ -1,0 +1,7 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Exclude large binary files
+*.pdf binary
+*.tar.gz binary
+*.zip binary

@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LightRAG API - GAFTA Guardian Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+        .content {
+            padding: 40px;
+        }
+        .section {
+            margin-bottom: 40px;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        .section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.8em;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 600;
+        }
+        input[type="text"], textarea, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        input[type="text"]:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        textarea {
+            min-height: 150px;
+            font-family: 'Courier New', monospace;
+            resize: vertical;
+        }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 28px;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .response {
+            margin-top: 20px;
+            padding: 20px;
+            background: #fff;
+            border-radius: 6px;
+            border: 2px solid #e0e0e0;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .response.success {
+            border-color: #4caf50;
+            background: #f1f8f4;
+        }
+        .response.error {
+            border-color: #f44336;
+            background: #fff5f5;
+        }
+        .response pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .status {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+        .status.healthy {
+            background: #4caf50;
+            color: white;
+        }
+        .status.unhealthy {
+            background: #f44336;
+            color: white;
+        }
+        .status.checking {
+            background: #ff9800;
+            color: white;
+        }
+        .file-upload {
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            background: #f8f9ff;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .file-upload:hover {
+            background: #f0f2ff;
+        }
+        .file-upload input[type="file"] {
+            display: none;
+        }
+        .file-info {
+            margin-top: 10px;
+            color: #666;
+            font-size: 14px;
+        }
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #e0e0e0;
+            margin-bottom: 20px;
+        }
+        .tab {
+            padding: 15px 30px;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 16px;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+        }
+        .tab.active {
+            color: #667eea;
+            border-bottom: 3px solid #667eea;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🛡️ GAFTA Guardian</h1>
+            <p>LightRAG API Demo Interface</p>
+        </div>
+        <div class="content">
+            <div class="section">
+                <h2>System Status</h2>
+                <div id="status" class="status checking">Checking...</div>
+                <div id="statusDetails"></div>
+            </div>
+
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('ingest')">📄 Ingest Document</button>
+                <button class="tab" onclick="switchTab('query')">🔍 Query Knowledge Graph</button>
+            </div>
+
+            <div id="ingest" class="tab-content active">
+                <div class="section">
+                    <h2>Upload & Ingest Document</h2>
+                    <form id="ingestForm">
+                        <div class="form-group">
+                            <label for="docId">Document ID:</label>
+                            <input type="text" id="docId" placeholder="e.g., gafta_49_standard" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Upload Text File, PDF, or Paste Content:</label>
+                            <div class="file-upload" onclick="document.getElementById('fileInput').click()">
+                                <input type="file" id="fileInput" accept=".txt,.md,.pdf" onchange="handleFileSelect(event)">
+                                <p>📁 Click to upload a .txt, .md, or .pdf file</p>
+                                <p style="font-size: 12px; color: #999; margin-top: 10px;">PDFs will be converted to text (basic extraction)</p>
+                                <p style="font-size: 12px; color: #999;">Or paste content below</p>
+                            </div>
+                            <div id="fileInfo" class="file-info"></div>
+                        </div>
+                        <div class="form-group">
+                            <label for="docText">Document Text:</label>
+                            <textarea id="docText" placeholder="Paste your GAFTA contract text here, or upload a file above..." required></textarea>
+                        </div>
+                        <button type="submit" id="ingestBtn">
+                            <span id="ingestLoading"></span>Ingest Document
+                        </button>
+                    </form>
+                    <div id="ingestResponse" class="response" style="display: none;"></div>
+                </div>
+            </div>
+
+            <div id="query" class="tab-content">
+                <div class="section">
+                    <h2>Query Knowledge Graph</h2>
+                    <form id="queryForm">
+                        <div class="form-group">
+                            <label for="queryText">Query:</label>
+                            <textarea id="queryText" placeholder="e.g., Is AgroTrade listed in the defaulters list? What awards are associated with them?" required></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="queryMode">Query Mode:</label>
+                            <select id="queryMode">
+                                <option value="hybrid" selected>Hybrid (Recommended)</option>
+                                <option value="naive">Naive</option>
+                                <option value="local">Local</option>
+                                <option value="global">Global</option>
+                            </select>
+                        </div>
+                        <button type="submit" id="queryBtn">
+                            <span id="queryLoading"></span>Execute Query
+                        </button>
+                    </form>
+                    <div id="queryResponse" class="response" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Use the server IP if accessing remotely, otherwise use current origin
+        const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
+            ? 'http://162.243.201.21:8000' 
+            : window.location.origin;
+
+        // Check health status on load
+        checkHealth();
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(tabName).classList.add('active');
+        }
+
+        async function checkHealth() {
+            const statusEl = document.getElementById('status');
+            const detailsEl = document.getElementById('statusDetails');
+            
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const data = await response.json();
+                
+                if (data.ollama === 'healthy' && data.lightrag_initialized) {
+                    statusEl.textContent = '✓ System Healthy';
+                    statusEl.className = 'status healthy';
+                    detailsEl.innerHTML = `
+                        <p><strong>Ollama:</strong> ${data.ollama}</p>
+                        <p><strong>LightRAG:</strong> ${data.lightrag_initialized ? 'Initialized' : 'Not Initialized'}</p>
+                        <p><strong>Working Directory:</strong> ${data.working_dir}</p>
+                    `;
+                } else {
+                    statusEl.textContent = '⚠ System Unhealthy';
+                    statusEl.className = 'status unhealthy';
+                    detailsEl.innerHTML = `
+                        <p><strong>Ollama:</strong> ${data.ollama}</p>
+                        <p><strong>LightRAG:</strong> ${data.lightrag_initialized ? 'Initialized' : 'Not Initialized'}</p>
+                        ${data.ollama_error ? `<p style="color: red;"><strong>Error:</strong> ${data.ollama_error}</p>` : ''}
+                    `;
+                }
+            } catch (error) {
+                statusEl.textContent = '✗ Connection Failed';
+                statusEl.className = 'status unhealthy';
+                detailsEl.innerHTML = `<p style="color: red;">Cannot connect to API: ${error.message}</p>`;
+            }
+        }
+
+        async function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const fileInfo = document.getElementById('fileInfo');
+            fileInfo.textContent = `Loading ${file.name}...`;
+            
+            // Handle PDF files
+            if (file.name.toLowerCase().endsWith('.pdf')) {
+                fileInfo.textContent = `PDF detected. Note: For best results, convert PDF to text first using the conversion script.`;
+                // Try to read as text (basic - may not work for all PDFs)
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    // PDFs read as text may not be perfect, but we'll try
+                    const text = e.target.result;
+                    if (text && text.length > 100) {
+                        document.getElementById('docText').value = text;
+                        document.getElementById('docId').value = file.name.replace(/\.[^/.]+$/, "");
+                        fileInfo.textContent = `Loaded PDF: ${file.name} (${(file.size / 1024).toFixed(2)} KB) - Note: For better extraction, use convert_pdf_to_text.py`;
+                    } else {
+                        fileInfo.innerHTML = `<span style="color: red;">PDF text extraction failed. Please convert PDF to text first using: python3 convert_pdf_to_text.py ${file.name}</span>`;
+                    }
+                };
+                reader.readAsText(file);
+            } else {
+                // Handle text files
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    document.getElementById('docText').value = e.target.result;
+                    document.getElementById('docId').value = file.name.replace(/\.[^/.]+$/, "");
+                    fileInfo.textContent = `Loaded: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                };
+                reader.readAsText(file);
+            }
+        }
+
+        document.getElementById('ingestForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('ingestBtn');
+            const loading = document.getElementById('ingestLoading');
+            const responseEl = document.getElementById('ingestResponse');
+            
+            btn.disabled = true;
+            loading.innerHTML = '<span class="loading"></span>';
+            responseEl.style.display = 'none';
+
+            try {
+                const response = await fetch(`${API_URL}/ingest`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        text: document.getElementById('docText').value,
+                        doc_id: document.getElementById('docId').value
+                    })
+                });
+
+                const data = await response.json();
+                responseEl.style.display = 'block';
+                
+                if (response.ok) {
+                    responseEl.className = 'response success';
+                    responseEl.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                    checkHealth(); // Refresh status
+                } else {
+                    responseEl.className = 'response error';
+                    responseEl.innerHTML = `<pre>Error: ${JSON.stringify(data, null, 2)}</pre>`;
+                }
+            } catch (error) {
+                responseEl.style.display = 'block';
+                responseEl.className = 'response error';
+                responseEl.innerHTML = `<pre>Error: ${error.message}</pre>`;
+            } finally {
+                btn.disabled = false;
+                loading.innerHTML = '';
+            }
+        });
+
+        document.getElementById('queryForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('queryBtn');
+            const loading = document.getElementById('queryLoading');
+            const responseEl = document.getElementById('queryResponse');
+            
+            btn.disabled = true;
+            loading.innerHTML = '<span class="loading"></span>';
+            responseEl.style.display = 'none';
+
+            try {
+                const response = await fetch(`${API_URL}/query`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: document.getElementById('queryText').value,
+                        mode: document.getElementById('queryMode').value
+                    })
+                });
+
+                const data = await response.json();
+                responseEl.style.display = 'block';
+                
+                if (response.ok) {
+                    responseEl.className = 'response success';
+                    responseEl.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+                } else {
+                    responseEl.className = 'response error';
+                    responseEl.innerHTML = `<pre>Error: ${JSON.stringify(data, null, 2)}</pre>`;
+                }
+            } catch (error) {
+                responseEl.style.display = 'block';
+                responseEl.className = 'response error';
+                responseEl.innerHTML = `<pre>Error: ${error.message}</pre>`;
+            } finally {
+                btn.disabled = false;
+                loading.innerHTML = '';
+            }
+        });
+
+        // Auto-refresh health every 30 seconds
+        setInterval(checkHealth, 30000);
+    </script>
+</body>
+</html>
