@@ -30,3 +30,4 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+lightrag_api/main.py.backup
