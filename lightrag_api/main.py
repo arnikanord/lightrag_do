@@ -43,7 +43,7 @@ os.makedirs(WORKING_DIR, exist_ok=True)
 # Custom embedding function
 
 async def _ollama_embedding_func_custom(texts: List[str]) -> List:
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=300.0) as client:
         embeddings = []
         for text in texts:
             try:
@@ -153,8 +153,10 @@ def _initialize_lightrag():
                 llm_model_func=ollama_llm_func,
                 llm_model_name=LLM_MODEL,
                 embedding_func=ollama_embedding_func,
+                default_embedding_timeout=300,  # Increase timeout to 300s for slow bge-m3 model
+                embedding_func_max_async=4,  # Reduce concurrent embeddings to avoid overload
             )
-            print("✓ LightRAG instance created")
+            print("✓ LightRAG instance created with increased embedding timeout (300s)")
         except Exception as e:
             import traceback
             print(f"✗ LightRAG initialization error:\n{traceback.format_exc()}")
