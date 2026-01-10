@@ -12,6 +12,7 @@ nest_asyncio.apply()
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import asyncio
@@ -32,6 +33,15 @@ except ImportError:
 app = FastAPI(title="LightRAG API", version="1.0.0")
 print("✓ nest_asyncio applied (Solution 3)")
 
+# Add CORS middleware to allow browser access
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins (change to specific domains in production)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Environment variables
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 WORKING_DIR = "/data/rag_storage"
@@ -45,19 +55,49 @@ os.makedirs(WORKING_DIR, exist_ok=True)
 async def _ollama_embedding_func_custom(texts: List[str]) -> List:
     async with httpx.AsyncClient(timeout=300.0) as client:
         embeddings = []
+        max_retries = 3
+        retry_delay = 1.0  # seconds
+        
         for text in texts:
-            try:
-                response = await client.post(
-                    f"{OLLAMA_BASE_URL}/api/embeddings",
-                    json={"model": EMBEDDING_MODEL, "prompt": text}
-                )
-                response.raise_for_status()
-                result = response.json()
-                embedding = result.get("embedding", [])
-                embeddings.append(np.array(embedding if embedding else [0.0] * 1024, dtype=np.float32))
-            except Exception as e:
-                print(f"Error in embedding call: {e}")
+            success = False
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    response = await client.post(
+                        f"{OLLAMA_BASE_URL}/api/embeddings",
+                        json={"model": EMBEDDING_MODEL, "prompt": text}
+                    )
+                    response.raise_for_status()
+                    result = response.json()
+                    embedding = result.get("embedding", [])
+                    if embedding and len(embedding) > 0:
+                        embeddings.append(np.array(embedding, dtype=np.float32))
+                        success = True
+                        break
+                    else:
+                        last_error = "Empty embedding returned"
+                except httpx.HTTPStatusError as e:
+                    last_error = f"HTTP {e.response.status_code}: {e.response.text[:100]}"
+                    if e.response.status_code >= 500 and attempt < max_retries - 1:
+                        # Server error - retry after delay
+                        await asyncio.sleep(retry_delay * (attempt + 1))
+                        continue
+                    else:
+                        break
+                except Exception as e:
+                    last_error = f"{type(e).__name__}: {str(e)}"
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay * (attempt + 1))
+                        continue
+                    else:
+                        break
+            
+            if not success:
+                print(f"Warning: Embedding failed after {max_retries} attempts: {last_error}")
+                # Fallback to zero vector (1024 dim for bge-m3)
                 embeddings.append(np.array([0.0] * 1024, dtype=np.float32))
+        
         # Return as 2D numpy array (LightRAG expects this format)
         if embeddings:
             return np.array(embeddings, dtype=np.float32)
@@ -80,14 +120,18 @@ async def _ollama_llm_async_custom(
     messages.append({"role": "user", "content": prompt})
     
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        async with httpx.AsyncClient(timeout=180.0) as client:  # Reduced timeout from 300s to 180s (3 min)
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/chat",
                 json={
                     "model": LLM_MODEL,
                     "messages": messages,
                     "stream": False,
-                    "options": {"num_ctx": 32768}
+                    "options": {
+                        "num_ctx": 16384,  # Reduced from 32768 to 16384 for faster processing (still large enough)
+                        "temperature": 0.7,  # Add temperature for consistency
+                        "top_p": 0.9,  # Nucleus sampling
+                    }
                 }
             )
             response.raise_for_status()
@@ -120,6 +164,14 @@ class IngestRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
+    # Optional query parameters for dynamic adjustment
+    query_edges_top_k: Optional[int] = None
+    query_edges_cosine: Optional[float] = None
+    query_nodes_top_k: Optional[int] = None
+    query_nodes_cosine: Optional[float] = None
+    chunk_top_k: Optional[int] = None
+    chunk_cosine: Optional[float] = None
+    enable_rerank: Optional[bool] = None
 
 @app.get("/health")
 async def health_check():
@@ -210,16 +262,236 @@ async def query_document(request: QueryRequest):
         raise HTTPException(status_code=400, detail=f"Mode must be one of: {', '.join(valid_modes)}")
     
     try:
-        if asyncio.iscoroutinefunction(lightrag.query):
-            response = await lightrag.query(request.query)
+        # Default optimized parameters (if not provided by user)
+        default_params = {
+            "query_edges_top_k": 20,
+            "query_edges_cosine": 0.2,
+            "query_nodes_top_k": 20,
+            "query_nodes_cosine": 0.2,
+            "chunk_top_k": 10,
+            "chunk_cosine": 0.2,
+            "enable_rerank": False,
+        }
+        
+        # Use user-provided parameters or defaults
+        user_params = {
+            "query_edges_top_k": request.query_edges_top_k,
+            "query_edges_cosine": request.query_edges_cosine,
+            "query_nodes_top_k": request.query_nodes_top_k,
+            "query_nodes_cosine": request.query_nodes_cosine,
+            "chunk_top_k": request.chunk_top_k,
+            "chunk_cosine": request.chunk_cosine,
+            "enable_rerank": request.enable_rerank,
+        }
+        
+        # Merge user params with defaults (user params override defaults)
+        query_params = {k: user_params[k] if user_params[k] is not None else default_params[k] 
+                       for k in default_params.keys()}
+        
+        # Pass parameters based on mode
+        if request.mode == "hybrid":
+            # Hybrid uses both global and naive
+            query_kwargs = {
+                "query_edges_top_k": query_params["query_edges_top_k"],
+                "query_edges_cosine": query_params["query_edges_cosine"],
+                "query_nodes_top_k": query_params["query_nodes_top_k"],
+                "query_nodes_cosine": query_params["query_nodes_cosine"],
+                "chunk_top_k": query_params["chunk_top_k"],
+                "chunk_cosine": query_params["chunk_cosine"],
+                "enable_rerank": query_params["enable_rerank"],
+            }
+        elif request.mode == "global":
+            query_kwargs = {
+                "query_edges_top_k": query_params["query_edges_top_k"],
+                "query_edges_cosine": query_params["query_edges_cosine"],
+                "query_nodes_top_k": query_params["query_nodes_top_k"],
+                "query_nodes_cosine": query_params["query_nodes_cosine"],
+            }
+        elif request.mode == "naive":
+            query_kwargs = {
+                "chunk_top_k": query_params["chunk_top_k"],
+                "chunk_cosine": query_params["chunk_cosine"],
+            }
+        elif request.mode == "local":
+            query_kwargs = {
+                "query_nodes_top_k": query_params["query_nodes_top_k"],
+                "query_nodes_cosine": query_params["query_nodes_cosine"],
+            }
         else:
-            response = await asyncio.to_thread(lightrag.query, request.query)
-        return {"answer": response, "query": request.query, "mode": request.mode}
+            query_kwargs = {}
+        
+        # Execute query with optimized parameters
+        if asyncio.iscoroutinefunction(lightrag.query):
+            response = await lightrag.query(request.query, **query_kwargs)
+        else:
+            response = await asyncio.to_thread(lightrag.query, request.query, **query_kwargs)
+        
+        return {
+            "answer": response, 
+            "query": request.query, 
+            "mode": request.mode,
+            "parameters_used": query_kwargs
+        }
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
         print(f"Query error:\n{error_trace}")
         raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}\n\n{error_trace}")
+
+@app.get("/graph")
+async def get_graph(limit: int = 100):
+    """Get knowledge graph data for visualization (entities and relations)"""
+    global lightrag
+    if lightrag is None:
+        try:
+            _initialize_lightrag()
+            await lightrag.initialize_storages()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize LightRAG: {str(e)}")
+    
+    try:
+        entities = []
+        relations = []
+        
+        # Try multiple methods to access LightRAG storage
+        try:
+            # Method 1: Try to access storage attributes directly
+            if hasattr(lightrag, 'entity_storage') and lightrag.entity_storage:
+                entity_storage = lightrag.entity_storage
+                # Check if it's a dict-like structure
+                if hasattr(entity_storage, '__iter__'):
+                    for i, (key, entity) in enumerate(list(entity_storage.items() if hasattr(entity_storage, 'items') else entity_storage)[:limit]):
+                        if isinstance(entity, dict):
+                            entities.append({
+                                "id": entity.get("entity_name", entity.get("id", key if isinstance(key, str) else f"entity_{i}")),
+                                "name": entity.get("entity_name", entity.get("name", str(key))),
+                                "description": entity.get("entity_desc", entity.get("description", "")),
+                                "type": entity.get("type", "entity")
+                            })
+            
+            if hasattr(lightrag, 'relation_storage') and lightrag.relation_storage:
+                relation_storage = lightrag.relation_storage
+                if hasattr(relation_storage, '__iter__'):
+                    for i, (key, rel) in enumerate(list(relation_storage.items() if hasattr(relation_storage, 'items') else relation_storage)[:limit]):
+                        if isinstance(rel, dict):
+                            relations.append({
+                                "from": rel.get("head_entity", rel.get("head", rel.get("from", ""))),
+                                "to": rel.get("tail_entity", rel.get("tail", rel.get("to", ""))),
+                                "relation": rel.get("relation_name", rel.get("relation", rel.get("relation_type", ""))),
+                                "description": rel.get("description", "")
+                            })
+            
+            # Method 2: Try to read from storage files directly
+            if len(entities) == 0 and len(relations) == 0:
+                entity_file = os.path.join(WORKING_DIR, "entities.json")
+                relation_file = os.path.join(WORKING_DIR, "relations.json")
+                
+                if os.path.exists(entity_file):
+                    with open(entity_file, 'r', encoding='utf-8') as f:
+                        entity_data = json.load(f)
+                        if isinstance(entity_data, dict):
+                            for key, entity in list(entity_data.items())[:limit]:
+                                entities.append({
+                                    "id": entity.get("entity_name", key),
+                                    "name": entity.get("entity_name", entity.get("name", key)),
+                                    "description": entity.get("entity_desc", entity.get("description", "")),
+                                    "type": entity.get("type", "entity")
+                                })
+                        elif isinstance(entity_data, list):
+                            for i, entity in enumerate(entity_data[:limit]):
+                                entities.append({
+                                    "id": entity.get("entity_name", entity.get("id", f"entity_{i}")),
+                                    "name": entity.get("entity_name", entity.get("name", f"Entity {i}")),
+                                    "description": entity.get("entity_desc", entity.get("description", "")),
+                                    "type": entity.get("type", "entity")
+                                })
+                
+                if os.path.exists(relation_file):
+                    with open(relation_file, 'r', encoding='utf-8') as f:
+                        relation_data = json.load(f)
+                        if isinstance(relation_data, dict):
+                            for key, rel in list(relation_data.items())[:limit]:
+                                relations.append({
+                                    "from": rel.get("head_entity", rel.get("head", rel.get("from", ""))),
+                                    "to": rel.get("tail_entity", rel.get("tail", rel.get("to", ""))),
+                                    "relation": rel.get("relation_name", rel.get("relation", rel.get("relation_type", ""))),
+                                    "description": rel.get("description", "")
+                                })
+                        elif isinstance(relation_data, list):
+                            for i, rel in enumerate(relation_data[:limit]):
+                                relations.append({
+                                    "from": rel.get("head_entity", rel.get("head", rel.get("from", ""))),
+                                    "to": rel.get("tail_entity", rel.get("tail", rel.get("to", ""))),
+                                    "relation": rel.get("relation_name", rel.get("relation", rel.get("relation_type", ""))),
+                                    "description": rel.get("description", "")
+                                })
+        
+        except Exception as e:
+            print(f"Warning: Could not access graph storage: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Ensure we have valid data (nodes need IDs, edges need from/to)
+        valid_entities = []
+        valid_relations = []
+        entity_ids = set()
+        
+        for entity in entities:
+            if entity.get("id") or entity.get("name"):
+                entity_id = entity.get("id") or entity.get("name")
+                if entity_id not in entity_ids:
+                    entity_ids.add(entity_id)
+                    valid_entities.append({
+                        "id": entity_id,
+                        "name": entity.get("name", entity_id),
+                        "description": entity.get("description", ""),
+                        "type": entity.get("type", "entity")
+                    })
+        
+        for rel in relations:
+            from_id = rel.get("from", "").strip()
+            to_id = rel.get("to", "").strip()
+            if from_id and to_id and from_id in entity_ids and to_id in entity_ids:
+                valid_relations.append({
+                    "from": from_id,
+                    "to": to_id,
+                    "relation": rel.get("relation", ""),
+                    "description": rel.get("description", "")
+                })
+        
+        return {
+            "nodes": valid_entities,
+            "edges": valid_relations,
+            "node_count": len(valid_entities),
+            "edge_count": len(valid_relations)
+        }
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Graph retrieval error:\n{error_trace}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve graph: {str(e)}")
+
+@app.get("/graph/query")
+async def get_query_graph(query: str, mode: str = "hybrid", limit: int = 50):
+    """Get graph data for a specific query (entities and relations relevant to the query)"""
+    global lightrag
+    if lightrag is None:
+        try:
+            _initialize_lightrag()
+            await lightrag.initialize_storages()
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize LightRAG: {str(e)}")
+    
+    try:
+        # Execute query to get relevant entities and relations
+        # LightRAG's query internally retrieves entities/relations - we need to capture them
+        # For now, return the full graph (can be enhanced later to filter by query relevance)
+        full_graph = await get_graph(limit=limit)
+        return full_graph
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to get query graph: {str(e)}")
 
 @app.get("/")
 async def root():
@@ -228,4 +500,15 @@ async def root():
     if os.path.exists(index_path):
         return FileResponse(index_path)
     else:
-        return {"name": "LightRAG API", "version": "1.0.0", "endpoints": {"ingest": "POST /ingest", "query": "POST /query", "health": "GET /health"}, "docs": "/docs"}
+        return {
+            "name": "LightRAG API", 
+            "version": "1.0.0", 
+            "endpoints": {
+                "ingest": "POST /ingest", 
+                "query": "POST /query", 
+                "health": "GET /health",
+                "graph": "GET /graph",
+                "graph/query": "GET /graph/query?query=...&mode=..."
+            }, 
+            "docs": "/docs"
+        }
