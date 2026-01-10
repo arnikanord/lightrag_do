@@ -2,16 +2,10 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: gafta-guardian-ollama
-    # GPU support (comment out if GPU driver issues)
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    # Uncomment below to run without GPU (slower but works)
-    # runtime: nvidia
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - ./ollama_data:/root/.ollama
     ports:
@@ -36,7 +30,7 @@ services:
     volumes:
       - ./rag_data:/data/rag_storage
     ports:
-      - "0.0.0.0:8000:8000"  # Bind to all interfaces for remote access
+      - "0.0.0.0:8000:8000"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]

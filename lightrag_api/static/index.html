@@ -285,10 +285,8 @@
 
     <script>
         // Use the server IP if accessing remotely, otherwise use current origin
-        const API_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' 
-            ? 'http://162.243.201.21:8000' 
-            : window.location.origin;
-
+        || window.location.hostname === '127.0.0.1' 
+                const API_URL = window.location.origin;
         // Check health status on load
         checkHealth();
 
@@ -307,7 +305,7 @@
                 const response = await fetch(`${API_URL}/health`);
                 const data = await response.json();
                 
-                if (data.ollama === 'healthy' && data.lightrag_initialized) {
+                if (data.ollama === 'healthy' && (data.lightrag_initialized || data.api === 'healthy')) {
                     statusEl.textContent = '✓ System Healthy';
                     statusEl.className = 'status healthy';
                     detailsEl.innerHTML = `

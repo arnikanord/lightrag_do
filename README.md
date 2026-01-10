@@ -172,3 +172,21 @@ curl http://localhost:8000/health     # Check API
 - [LightRAG](https://github.com/HKUDS/LightRAG) - Graph-based RAG system
 - [Ollama](https://ollama.ai/) - Local LLM server
 - [FastAPI](https://fastapi.tiangolo.com/) - Web framework
+
+## 🐛 Troubleshooting
+
+If you encounter issues, see the comprehensive [TROUBLESHOOTING.md](TROUBLESHOOTING.md) guide.
+
+**Quick fixes:**
+- **UI shows unhealthy**: See [UI_FIXES.md](UI_FIXES.md) for fixes
+- **GPU not working**: Verify NVIDIA driver and Docker runtime configuration
+- **Health check fails**: Check container logs with `docker-compose logs`
+
+## 📚 Additional Documentation
+
+- **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)**: Comprehensive troubleshooting guide
+- **[UI_FIXES.md](UI_FIXES.md)**: UI health check fixes and solutions
+- **[ACCESS_COMMANDS.md](ACCESS_COMMANDS.md)**: Complete API access commands
+- **[QUICK_RESTORE_GUIDE.md](QUICK_RESTORE_GUIDE.md)**: Fast restoration steps
+- **[ARCHITECTURE.md](ARCHITECTURE.md)**: System architecture details
+- **[DEPLOYMENT.md](DEPLOYMENT.md)**: Deployment checklist

@@ -120,3 +120,54 @@ If you have backup files:
 - Full async fix details: See `ASYNC_FIX_COMPLETE.md`
 - Architecture: See `ARCHITECTURE.md`
 - Setup guide: See `SETUP_GUIDE.md`
+
+## Important Fixes Applied
+
+### UI Health Check Fix
+The UI has been updated to correctly show health status. The health check now works even when LightRAG hasn't been initialized yet (it initializes lazily on first request).
+
+### Docker GPU Configuration
+For docker-compose 1.29.2, ensure `/etc/docker/daemon.json` contains:
+```json
+{
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "runtimeArgs": []
+    }
+  }
+}
+```
+
+Then restart Docker:
+```bash
+systemctl restart docker
+```
+
+### HTML Static Files
+The `lightrag_api/static/index.html` uses `window.location.origin` to automatically detect the server URL. No hardcoded IPs needed.
+
+## Troubleshooting UI Shows Unhealthy
+
+If UI shows unhealthy:
+
+1. Check health endpoint:
+   ```bash
+   curl http://YOUR_SERVER_IP:8000/health
+   ```
+
+2. Verify both `api` and `ollama` show "healthy"
+
+3. `lightrag_initialized: false` is normal - it initializes on first document ingest or query
+
+4. Check container logs:
+   ```bash
+   docker-compose logs lightrag_api
+   ```
+
+5. Rebuild if needed:
+   ```bash
+   docker-compose down
+   docker-compose build --no-cache lightrag_api
+   docker-compose up -d
+   ```
