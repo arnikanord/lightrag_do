@@ -35,3 +35,4 @@ lightrag_api/main.py.backup
 # Backup files
 *.backup
 *~
+.env

@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import asyncio
-from lightrag import LightRAG
+from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
 import httpx
 from typing import Optional, Dict, Any, List
@@ -43,12 +43,22 @@ app.add_middleware(
 )
 
 # Environment variables
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-WORKING_DIR = "/data/rag_storage"
-LLM_MODEL = "llama3.3:70b"
-EMBEDDING_MODEL = "bge-m3"
+
+# Environment variables - Support for both Ollama and OpenAI bindings
+LLM_BINDING = os.getenv("LLM_BINDING", "ollama")
+LLM_BINDING_HOST = os.getenv("LLM_BINDING_HOST", os.getenv("OLLAMA_BASE_URL", "http://ollama:11434"))
+LLM_MODEL = os.getenv("LLM_MODEL", "llama3.3:70b")
+
+EMBEDDING_BINDING = os.getenv("EMBEDDING_BINDING", "ollama")
+EMBEDDING_BINDING_HOST = os.getenv("EMBEDDING_BINDING_HOST", os.getenv("OLLAMA_BASE_URL", "http://ollama:11434"))
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "bge-m3")
+
+LIGHTRAG_API_KEY = os.getenv("LIGHTRAG_API_KEY", "")
+WORKING_DIR = os.getenv("WORKING_DIR", "/data/rag_storage")
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", "32000"))
 
 os.makedirs(WORKING_DIR, exist_ok=True)
+
 
 # Custom embedding function
 
@@ -144,18 +154,104 @@ async def _ollama_llm_async_custom(
         traceback.print_exc()
         return ""
 
+
+# OpenAI-compatible LLM function
+async def _openai_llm_async_custom(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    history_messages: List = [],
+    keyword_extraction: bool = False,
+    **kwargs
+) -> str:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.extend(history_messages)
+    messages.append({"role": "user", "content": prompt})
+
+    try:
+        headers = {"Authorization": f"Bearer {LIGHTRAG_API_KEY}"} if LIGHTRAG_API_KEY else {}
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                f"{LLM_BINDING_HOST}/chat/completions" if not LLM_BINDING_HOST.endswith("/chat/completions") else LLM_BINDING_HOST,
+                headers=headers,
+                json={
+                    "model": LLM_MODEL,
+                    "messages": messages,
+                    "stream": False,
+                    "max_tokens": MAX_TOKENS,
+                    "temperature": kwargs.get("temperature", 0.7),
+                    "top_p": kwargs.get("top_p", 0.9),
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            choices = result.get("choices", [])
+            if choices:
+                return choices[0].get("message", {}).get("content", "")
+            return ""
+    except Exception as e:
+        print(f"Error in OpenAI LLM call: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
+
+# OpenAI-compatible Embedding function
+async def _openai_embedding_func_custom(texts: List[str]) -> List[np.ndarray]:
+    headers = {"Authorization": f"Bearer {LIGHTRAG_API_KEY}"} if LIGHTRAG_API_KEY else {}
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        try:
+            # Check if using Azure or standard OpenAI format
+            # Standard: /embeddings
+            url = f"{EMBEDDING_BINDING_HOST}/embeddings" if not EMBEDDING_BINDING_HOST.endswith("/embeddings") else EMBEDDING_BINDING_HOST
+            
+            response = await client.post(
+                url,
+                headers=headers,
+                json={
+                    "model": EMBEDDING_MODEL,
+                    "input": texts
+                }
+            )
+            response.raise_for_status()
+            result = response.json()
+            data = result.get("data", [])
+            # Sort by index to ensure order matches input
+            data.sort(key=lambda x: x.get("index", 0))
+            return np.array([item["embedding"] for item in data], dtype=np.float32)
+        except Exception as e:
+            print(f"Error in OpenAI Embedding call: {e}")
+            # Fallback to zeros if everything fails
+            return np.zeros((len(texts), 768), dtype=np.float32)
+
 # Use custom functions (built-in may not work with HTTP endpoints in Docker)
-USE_BUILTIN = False
-ollama_llm_func = _ollama_llm_async_custom
-ollama_embedding_func = EmbeddingFunc(
-    func=_ollama_embedding_func_custom,
-    embedding_dim=1024,
-    max_token_size=8192
-)
+# Select functions based on binding
+if LLM_BINDING.lower() == "openai":
+    llm_func = _openai_llm_async_custom
+    print(f"Using OpenAI-compatible LLM binding: {LLM_BINDING_HOST} ({LLM_MODEL})")
+else:
+    llm_func = _ollama_llm_async_custom
+    print(f"Using Ollama LLM binding: {LLM_BINDING_HOST} ({LLM_MODEL})")
+
+if EMBEDDING_BINDING.lower() == "openai":
+    embedding_func = EmbeddingFunc(
+        func=_openai_embedding_func_custom,
+        embedding_dim=768, # Common for noms/bert, but adjust if needed
+        max_token_size=8192
+    )
+    print(f"Using OpenAI-compatible Embedding binding: {EMBEDDING_BINDING_HOST} ({EMBEDDING_MODEL})")
+else:
+    embedding_func = EmbeddingFunc(
+        func=_ollama_embedding_func_custom,
+        embedding_dim=1024,
+        max_token_size=8192
+    )
+    print(f"Using Ollama Embedding binding: {EMBEDDING_BINDING_HOST} ({EMBEDDING_MODEL})")
+
 
 lightrag = None
 print(f"LightRAG will be initialized on first request.")
-print(f"  Ollama URL: {OLLAMA_BASE_URL}, Model: {LLM_MODEL}")
+print(f"  Binding: {LLM_BINDING}, URL: {LLM_BINDING_HOST}, Model: {LLM_MODEL}")
 
 class IngestRequest(BaseModel):
     text: str
@@ -175,25 +271,37 @@ class QueryRequest(BaseModel):
 
 @app.get("/health")
 async def health_check():
+    backend_status = False
+    backend_error = None
+    
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
-            ollama_status = response.status_code == 200
-            ollama_error = None
+            if LLM_BINDING.lower() == "openai":
+                # For OpenAI check models endpoint
+                url = f"{LLM_BINDING_HOST}/models" if not LLM_BINDING_HOST.endswith("/chat/completions") else LLM_BINDING_HOST.replace("/chat/completions", "/models")
+                response = await client.get(url, headers={"Authorization": f"Bearer {LIGHTRAG_API_KEY}"} if LIGHTRAG_API_KEY else {})
+            else:
+                # For Ollama check tags
+                response = await client.get(f"{LLM_BINDING_HOST}/api/tags")
+                
+            backend_status = response.status_code == 200
+            if not backend_status:
+                backend_error = f"HTTP {response.status_code}"
     except Exception as e:
-        ollama_status = False
-        ollama_error = str(e)
+        backend_status = False
+        backend_error = str(e)
     
     status = {
         "api": "healthy",
-        "ollama": "healthy" if ollama_status else "unhealthy",
+        "llm_binding": LLM_BINDING,
+        "backend": "healthy" if backend_status else "unhealthy",
         "lightrag_initialized": lightrag is not None,
         "working_dir": WORKING_DIR,
-        "ollama_url": OLLAMA_BASE_URL,
+        "llm_host": LLM_BINDING_HOST,
         "nest_asyncio": "enabled"
     }
-    if not ollama_status:
-        status["ollama_error"] = ollama_error
+    if not backend_status:
+        status["backend_error"] = backend_error
     return status
 
 def _initialize_lightrag():
@@ -202,11 +310,11 @@ def _initialize_lightrag():
         try:
             lightrag = LightRAG(
                 working_dir=WORKING_DIR,
-                llm_model_func=ollama_llm_func,
+                llm_model_func=llm_func,
                 llm_model_name=LLM_MODEL,
-                embedding_func=ollama_embedding_func,
-                default_embedding_timeout=300,  # Increase timeout to 300s for slow bge-m3 model
-                embedding_func_max_async=4,  # Reduce concurrent embeddings to avoid overload
+                embedding_func=embedding_func,
+                default_embedding_timeout=300,
+                embedding_func_max_async=4,
             )
             print("✓ LightRAG instance created with increased embedding timeout (300s)")
         except Exception as e:
@@ -288,49 +396,30 @@ async def query_document(request: QueryRequest):
         query_params = {k: user_params[k] if user_params[k] is not None else default_params[k] 
                        for k in default_params.keys()}
         
-        # Pass parameters based on mode
-        if request.mode == "hybrid":
-            # Hybrid uses both global and naive
-            query_kwargs = {
-                "query_edges_top_k": query_params["query_edges_top_k"],
-                "query_edges_cosine": query_params["query_edges_cosine"],
-                "query_nodes_top_k": query_params["query_nodes_top_k"],
-                "query_nodes_cosine": query_params["query_nodes_cosine"],
-                "chunk_top_k": query_params["chunk_top_k"],
-                "chunk_cosine": query_params["chunk_cosine"],
-                "enable_rerank": query_params["enable_rerank"],
-            }
-        elif request.mode == "global":
-            query_kwargs = {
-                "query_edges_top_k": query_params["query_edges_top_k"],
-                "query_edges_cosine": query_params["query_edges_cosine"],
-                "query_nodes_top_k": query_params["query_nodes_top_k"],
-                "query_nodes_cosine": query_params["query_nodes_cosine"],
-            }
-        elif request.mode == "naive":
-            query_kwargs = {
-                "chunk_top_k": query_params["chunk_top_k"],
-                "chunk_cosine": query_params["chunk_cosine"],
-            }
-        elif request.mode == "local":
-            query_kwargs = {
-                "query_nodes_top_k": query_params["query_nodes_top_k"],
-                "query_nodes_cosine": query_params["query_nodes_cosine"],
-            }
-        else:
-            query_kwargs = {}
+        # Prepare QueryParam
+        qp = QueryParam(
+            mode=request.mode,
+            top_k=query_params.get("query_nodes_top_k", 20),
+            chunk_top_k=query_params.get("chunk_top_k", 10),
+            enable_rerank=query_params.get("enable_rerank", False)
+        )
         
-        # Execute query with optimized parameters
+        # Execute query
         if asyncio.iscoroutinefunction(lightrag.query):
-            response = await lightrag.query(request.query, **query_kwargs)
+            response = await lightrag.query(request.query, param=qp)
         else:
-            response = await asyncio.to_thread(lightrag.query, request.query, **query_kwargs)
+            response = await asyncio.to_thread(lightrag.query, request.query, param=qp)
         
         return {
             "answer": response, 
             "query": request.query, 
             "mode": request.mode,
-            "parameters_used": query_kwargs
+            "parameters_used": {
+                "top_k": qp.top_k,
+                "chunk_top_k": qp.chunk_top_k,
+                "enable_rerank": qp.enable_rerank,
+                "mode": qp.mode
+            }
         }
     except Exception as e:
         import traceback
@@ -381,10 +470,51 @@ async def get_graph(limit: int = 100):
                                 "description": rel.get("description", "")
                             })
             
-            # Method 2: Try to read from storage files directly
+            # Method 2: Try to read from GraphML file
+            if len(entities) == 0:
+                graph_file = os.path.join(WORKING_DIR, "graph_chunk_entity_relation.graphml")
+                if os.path.exists(graph_file):
+                    try:
+                        import networkx as nx
+                        G = nx.read_graphml(graph_file)
+                        
+                        count = 0
+                        for node_id, data in G.nodes(data=True):
+                            if count >= limit:
+                                break
+                            
+                            # Skip chunk nodes if we only want entities
+                            # Entities usually have quotes or specific formatting, chunks are hashes
+                            if data.get('d') and 'chunk' in data.get('d', ''):
+                                continue
+                                
+                            entities.append({
+                                "id": node_id.strip('"'),
+                                "name": node_id.strip('"'),
+                                "description": data.get("description", data.get("desc", "")).strip('"'),
+                                "type": "entity"
+                            })
+                            count += 1
+                            
+                        count = 0
+                        for u, v, data in G.edges(data=True):
+                            if count >= limit:
+                                break
+                            
+                            relations.append({
+                                "from": u.strip('"'),
+                                "to": v.strip('"'),
+                                "relation": data.get("label", data.get("relation", "related")),
+                                "description": data.get("description", "")
+                            })
+                            count += 1
+                    except Exception as e:
+                        print(f"Error reading GraphML: {e}")
+            
+            # Legacy JSON fallback
             if len(entities) == 0 and len(relations) == 0:
-                entity_file = os.path.join(WORKING_DIR, "entities.json")
-                relation_file = os.path.join(WORKING_DIR, "relations.json")
+                entity_file = os.path.join(WORKING_DIR, "kv_store_full_entities.json")
+                relation_file = os.path.join(WORKING_DIR, "kv_store_full_relations.json")
                 
                 if os.path.exists(entity_file):
                     with open(entity_file, 'r', encoding='utf-8') as f:

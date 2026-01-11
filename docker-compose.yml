@@ -1,40 +1,12 @@
+version: '3.8'
 services:
-  ollama:
-    image: ollama/ollama:latest
-    container_name: gafta-guardian-ollama
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-    volumes:
-      - ./ollama_data:/root/.ollama
+  lightrag:
+    build: ./lightrag_api
+    container_name: lightrag_gafta
     ports:
-      - "11434:11434"
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
-    restart: unless-stopped
-
-  lightrag_api:
-    build:
-      context: ./lightrag_api
-      dockerfile: Dockerfile
-    container_name: gafta-guardian-lightrag_api
-    depends_on:
-      - ollama
-    environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - "9621:8000"
     volumes:
-      - ./rag_data:/data/rag_storage
-    ports:
-      - "0.0.0.0:8000:8000"
+      - ./rag_data:/app/data
+    env_file:
+      - .env
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s

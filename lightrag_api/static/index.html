@@ -410,22 +410,24 @@
                 const data = await response.json();
                 console.log('Health data received:', data);
                 
-                if (data.ollama === 'healthy' && (data.lightrag_initialized || data.api === 'healthy')) {
+                if (data.backend === 'healthy' && (data.lightrag_initialized || data.api === 'healthy')) {
                     console.log('Setting status to healthy');
                     statusEl.textContent = '✓ System Healthy';
                     statusEl.className = 'status healthy';
                     detailsEl.innerHTML = `
-                        <p><strong>Ollama:</strong> ${data.ollama}</p>
+                        <p><strong>Backend (${data.llm_binding || 'Unknown'}):</strong> ${data.backend}</p>
                         <p><strong>LightRAG:</strong> ${data.lightrag_initialized ? 'Initialized' : 'Not Initialized'}</p>
                         <p><strong>Working Directory:</strong> ${data.working_dir}</p>
+                        <p><strong>URL:</strong> ${data.llm_host || data.ollama_url}</p>
                     `;
                 } else {
                     console.log('Setting status to unhealthy, data:', data);
                     statusEl.textContent = '⚠ System Unhealthy';
                     statusEl.className = 'status unhealthy';
                     detailsEl.innerHTML = `
-                        <p><strong>Ollama:</strong> ${data.ollama}</p>
+                        <p><strong>Backend (${data.llm_binding || 'Unknown'}):</strong> ${data.backend || data.ollama}</p>
                         <p><strong>LightRAG:</strong> ${data.lightrag_initialized ? 'Initialized' : 'Not Initialized'}</p>
+                        ${data.backend_error ? `<p style="color: red;"><strong>Error:</strong> ${data.backend_error}</p>` : ''}
                         ${data.ollama_error ? `<p style="color: red;"><strong>Error:</strong> ${data.ollama_error}</p>` : ''}
                     `;
                 }
